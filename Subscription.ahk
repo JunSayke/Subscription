@@ -1,55 +1,101 @@
 #Requires AutoHotkey v2.0
 #Include Webhook.ahk
-#Include AES.ahk
+#Include CNG.ahk
+#Include DateParser.ahk
 
-Class Subscription {
-    static __New() {
-        this.winhttp := ComObject("WinHttp.WinHttpRequest.5.1")
-        this.webhook := Webhook("https://discord.com/api/webhooks/1147841574693261352/okFioJpdI9ugLaUGCH4myTN9vCyHtPLXQPpG5sHqw4q276YaJ7J9-WsME9wVubz-qoXc")
-        this.aes := AES("Hunyo_Encryption", "v1.0")
+Class Subscription extends Webhook {
+    ; Return a user fields map object.
+    static CreateUserField(key, devices, expiration, subscriptions) {
+        fields := [
+            Map("name", "License Key", "value", key),
+            Map("name", "Expiration", "value", expiration, "inline", true), 
+            Map("name", "Devices", "value", devices, "inline", true),
+            Map("name", "Subscriptions", "value", subscriptions),
+        ]
+        return fields
     }
 
-    static GetKey(key) {
-        if JSON := this.webhook.Get(this.aes.Decrypt(key))
-            return this.ExtractKey(JSON["embeds"][1]["fields"])
+    ; Return a user map object.
+    static CreateUser(key, devices, expiration, subscriptions) {
+        user := Map()
+        user["License Key"] := key
+        user["Devices"] := devices
+        user["Expiration"] := expiration
+        user["Subscriptions"] := subscriptions
+        return user
     }
 
-    static SetKey(expiration, subscription) {
-        payload := this.webhook.Payload([Map("name", "Generating Key. . .", "value", "")], 1127128)
-        if JSON := this.webhook.Post(payload) {
-            payload := this.webhook.Payload([Map("name", "Key", "value", this.aes.Encrypt(JSON["id"])), Map("name", "Expiration", "value", expiration, "inline", true), Map("name", "Subscription", "value", subscription, "inline", true)], 1127128)
-            if JSON := this.webhook.Patch(JSON["id"], payload)
-                return this.ExtractKey(JSON["embeds"][1]["fields"])
-        }
+    ; Return user expiration status.
+    static CheckExpiry(user) {
+        expiration := Date.Parse(user["Expiration"])
+        status := user["Expiration"] = "Lifetime" ? "Lifetime License" 
+                : Date.Compare(expiration, A_NowUTC + 8) ? FormatTime(expiration, "MMMM dd, yyyy") 
+                : "Expired License"
+        return status
     }
 
-    static UpdateKey(key) {
-
-    }
-
-    static CheckKey(key) {
-
-    }
-
-    static DisplayKey(user) {
-        MsgBox("Key: " user["key"] "`nExpiration: " user["expiration"] "`tSubscription: " user["subscription"])
-    }
-
-    static ExtractKey(JSON) {
+    ; Return a user map object from JSON.
+    static Extract(JSON) {
         user := Map()
         for i, v in JSON {
-            switch v.Get("name") {
-                case "Key":
-                    user["key"] := v.Get("value")
-                case "Expiration":
-                    user["expiration"] := v.Get("value")
-                case "Subscription":
-                    user["subscription"] := v.Get("value")
-            }
+            user[v["name"]] := v["value"]
         }
         return user
     }
-}
 
-Subscription.DisplayKey(Subscription.GetKey("loCKyxG9iomtmHAak5hseyl/Nu3WTItyku7gXAV6+o4="))
-; Subscription.SetKey("lifetime", "admin")
+    ; Display user map object details and set A_Clipboard to user license key.
+    static DisplayUser(user) {
+        A_Clipboard := user["License Key"]
+        MsgBox("License Key:`t" user["License Key"] "`nExpiration:`t" user["Expiration"] "`nDevices:`t`t" user["Devices"] "`nSubscriptions:`t" user["Subscriptions"] "`nStatus:`t`t" Subscription.CheckExpiry(user))
+    }
+
+    static CreateLicenseKeyIni() => IniWrite("your_license_key", "licensekey.ini", "subscription", "license_key")
+
+    static ExtractLicenseKeyIni() => IniRead("licensekey.ini", "subscription", "license_key")
+
+    static Encrypt(key) => Encrypt.String("AES", "CBC", key, "Hunyo_Encryption", "v1.0")
+    
+    static Decrypt(key) => Decrypt.String("AES", "CBC", key, "Hunyo_Encryption", "v1.0")
+    
+    __New(url) {
+        this.url := url
+        
+        if not FileExist("licensekey.ini") 
+            Subscription.CreateLicenseKeyIni()
+    }
+
+    ; Accept license key as a parameter and return a user map object value.
+    GetKey(key) {
+        key := Subscription.Decrypt(key)
+        if JSON := this.Get(key) {
+            user := Subscription.Extract(JSON["embeds"][1]["fields"])
+            return this.AppendDevice(user, 1)
+        }
+    }
+
+    ; Accept user map object as a parameter and return a new user map object value.
+    SetKey(user) {
+        key := Subscription.Decrypt(user["License Key"])
+        user := Subscription.CreateUserField(user["License Key"], user["Devices"], user["Expiration"], user["Subscriptions"])
+        payload := Subscription.Payload(user)
+        if JSON := this.Patch(key, payload)
+            return Subscription.Extract(JSON["embeds"][1]["fields"])
+    }
+
+    ; Accept expiration and subscriptions as a parameters and return a new user map object value.
+    CreateKey(expiration, subscriptions) {
+        fields := [Map("name", "Generating User Account. . .", "value", "")]
+        payload := Subscription.Payload(fields)
+        if JSON := this.Post(payload) {
+            key := Subscription.Encrypt(JSON["id"])
+            user := Subscription.CreateUser(key, 0, expiration, subscriptions)
+            return this.SetKey(user)
+        }
+    }
+
+    ; Accept user map object and count as a parameters and return a new user map object value.
+    AppendDevice(user, count) {
+        user["Devices"] += count
+        return this.SetKey(user)
+    }
+}
